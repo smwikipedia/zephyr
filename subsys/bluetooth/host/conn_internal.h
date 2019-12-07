@@ -53,9 +53,6 @@ struct bt_conn_le {
 	u8_t			features[8];
 
 	struct bt_keys		*keys;
-
-	/* Delayed work for connection update and timeout handling */
-	struct k_delayed_work	update_work;
 };
 
 #if defined(CONFIG_BT_BREDR)
@@ -82,16 +79,14 @@ struct bt_conn_sco {
 
 typedef void (*bt_conn_tx_cb_t)(struct bt_conn *conn, void *user_data);
 
-struct bt_conn_tx_data {
-	bt_conn_tx_cb_t cb;
-	void *user_data;
-};
-
 struct bt_conn_tx {
 	sys_snode_t node;
-	struct bt_conn *conn;
-	struct k_work work;
-	struct bt_conn_tx_data data;
+
+	bt_conn_tx_cb_t cb;
+	void *user_data;
+
+	/* Number of pending packets without a callback after this one */
+	u32_t pending_no_cb;
 };
 
 struct bt_conn {
@@ -118,10 +113,17 @@ struct bt_conn {
 	u16_t		        rx_len;
 	struct net_buf		*rx;
 
-	/* Sent but not acknowledged TX packets */
+	/* Sent but not acknowledged TX packets with a callback */
 	sys_slist_t		tx_pending;
-	/* Acknowledged but not yet notified TX packets */
-	struct k_fifo		tx_notify;
+	/* Sent but not acknowledged TX packets without a callback before
+	 * the next packet (if any) in tx_pending.
+	 */
+	u32_t                   pending_no_cb;
+
+	/* Completed TX for which we need to call the callback */
+	sys_slist_t		tx_complete;
+	struct k_work           tx_complete_work;
+
 
 	/* Queue for outgoing ACL data */
 	struct k_fifo		tx_queue;
@@ -130,6 +132,9 @@ struct bt_conn {
 	sys_slist_t		channels;
 
 	atomic_t		ref;
+
+	/* Delayed work for connection update and other deferred tasks */
+	struct k_delayed_work	update_work;
 
 	union {
 		struct bt_conn_le	le;
@@ -153,7 +158,7 @@ static inline int bt_conn_send(struct bt_conn *conn, struct net_buf *buf)
 }
 
 /* Add a new LE connection */
-struct bt_conn *bt_conn_add_le(const bt_addr_le_t *peer);
+struct bt_conn *bt_conn_add_le(u8_t id, const bt_addr_le_t *peer);
 
 /* Add a new BR/EDR connection */
 struct bt_conn *bt_conn_add_br(const bt_addr_t *peer);
@@ -238,4 +243,3 @@ struct k_sem *bt_conn_get_pkts(struct bt_conn *conn);
 /* k_poll related helpers for the TX thread */
 int bt_conn_prepare_events(struct k_poll_event events[]);
 void bt_conn_process_tx(struct bt_conn *conn);
-void bt_conn_notify_tx(struct bt_conn *conn);

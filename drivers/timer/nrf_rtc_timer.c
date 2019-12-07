@@ -10,15 +10,18 @@
 #include <drivers/clock_control/nrf_clock_control.h>
 #include <drivers/timer/system_timer.h>
 #include <sys_clock.h>
-#include <nrf_rtc.h>
+#include <hal/nrf_rtc.h>
 #include <spinlock.h>
 
 #define RTC NRF_RTC1
 
-#define COUNTER_MAX 0x00ffffff
+#define COUNTER_SPAN BIT(24)
+#define COUNTER_MAX (COUNTER_SPAN - 1U)
+#define COUNTER_HALF_SPAN (COUNTER_SPAN / 2U)
 #define CYC_PER_TICK (sys_clock_hw_cycles_per_sec()	\
 		      / CONFIG_SYS_CLOCK_TICKS_PER_SEC)
 #define MAX_TICKS ((COUNTER_MAX - CYC_PER_TICK) / CYC_PER_TICK)
+#define MAX_CYCLES (MAX_TICKS * CYC_PER_TICK)
 
 static struct k_spinlock lock;
 
@@ -41,7 +44,7 @@ static u32_t counter(void)
 
 /* Note: this function has public linkage, and MUST have this
  * particular name.  The platform architecture itself doesn't care,
- * but there is a test (tests/kernel/arm_irq_vector_table) that needs
+ * but there is a test (tests/arch/arm_irq_vector_table) that needs
  * to find it to it can set it in a custom vector table.  Should
  * probably better abstract that at some point (e.g. query and reset
  * it by pointer at runtime, maybe?) so we don't have this leaky
@@ -85,7 +88,7 @@ int z_clock_driver_init(struct device *device)
 		return -1;
 	}
 
-	clock_control_on(clock, (void *)CLOCK_CONTROL_NRF_K32SRC);
+	clock_control_on(clock, NULL);
 
 	/* TODO: replace with counter driver to access RTC */
 	nrf_rtc_prescaler_set(RTC, 0);
@@ -119,12 +122,32 @@ void z_clock_set_timeout(s32_t ticks, bool idle)
 
 	k_spinlock_key_t key = k_spin_lock(&lock);
 	u32_t cyc, dt, t = counter();
+	u32_t unannounced = counter_sub(t, last_count);
 	bool zli_fixup = IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS);
 
-	/* Round up to next tick boundary */
-	cyc = ticks * CYC_PER_TICK + 1 + counter_sub(t, last_count);
+	/* If we haven't announced for more than half the 24-bit wrap
+	 * duration, then force an announce to avoid loss of a wrap
+	 * event.  This can happen if new timeouts keep being set
+	 * before the existing one triggers the interrupt.
+	 */
+	if (unannounced >= COUNTER_HALF_SPAN) {
+		ticks = 0;
+	}
+
+	/* Get the cycles from last_count to the tick boundary after
+	 * the requested ticks have passed starting now.
+	 */
+	cyc = ticks * CYC_PER_TICK + 1 + unannounced;
 	cyc += (CYC_PER_TICK - 1);
 	cyc = (cyc / CYC_PER_TICK) * CYC_PER_TICK;
+
+	/* Due to elapsed time the calculation above might produce a
+	 * duration that laps the counter.  Don't let it.
+	 */
+	if (cyc > MAX_CYCLES) {
+		cyc = MAX_CYCLES;
+	}
+
 	cyc += last_count;
 
 	/* Per NRF docs, the RTC is guaranteed to trigger a compare

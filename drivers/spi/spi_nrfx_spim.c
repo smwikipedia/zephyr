@@ -59,7 +59,7 @@ static inline nrf_spim_frequency_t get_nrf_spim_frequency(u32_t frequency)
 		return NRF_SPIM_FREQ_2M;
 	} else if (frequency < 8000000) {
 		return NRF_SPIM_FREQ_4M;
-#ifdef CONFIG_SOC_NRF52840
+#if defined(CONFIG_SOC_NRF52833) || defined(CONFIG_SOC_NRF52840)
 	} else if (frequency < 16000000) {
 		return NRF_SPIM_FREQ_8M;
 	} else if (frequency < 32000000) {
@@ -360,18 +360,18 @@ static int spim_nrfx_pm_control(struct device *dev, u32_t ctrl_command,
 }
 #endif /* CONFIG_DEVICE_POWER_MANAGEMENT */
 
-#if NRFX_CHECK(NRFX_SPIM_EXTENDED_ENABLED)
-#define SPI_NRFX_SPIM_EXTENDED_CONFIG(idx) \
-	.rx_delay = CONFIG_SPI_##idx##_NRF_RX_DELAY,
-#else
-#define SPI_NRFX_SPIM_EXTENDED_CONFIG(idx)
-#endif
+#define SPI_NRFX_SPIM_EXTENDED_CONFIG(idx)				\
+	COND_CODE_1(IS_ENABLED(NRFX_SPIM_EXTENDED_ENABLED),		\
+		(COND_CODE_1(SPIM##idx##_FEATURE_RXDELAY_PRESENT,	\
+			(.rx_delay = CONFIG_SPI_##idx##_NRF_RX_DELAY,),	\
+			())),						\
+		())
 
 #define SPI_NRFX_SPIM_DEVICE(idx)					       \
 	static int spi_##idx##_init(struct device *dev)			       \
 	{								       \
 		IRQ_CONNECT(NRFX_IRQ_NUMBER_GET(NRF_SPIM##idx),		       \
-			    DT_NORDIC_NRF_SPI_SPI_##idx##_IRQ_0_PRIORITY,      \
+			    DT_NORDIC_NRF_SPIM_SPI_##idx##_IRQ_0_PRIORITY,     \
 			    nrfx_isr, nrfx_spim_##idx##_irq_handler, 0);       \
 		return init_spim(dev);					       \
 	}								       \
@@ -384,9 +384,9 @@ static int spim_nrfx_pm_control(struct device *dev, u32_t ctrl_command,
 		.spim = NRFX_SPIM_INSTANCE(idx),			       \
 		.max_chunk_len = (1 << SPIM##idx##_EASYDMA_MAXCNT_SIZE) - 1,   \
 		.config = {						       \
-			.sck_pin   = DT_NORDIC_NRF_SPI_SPI_##idx##_SCK_PIN,    \
-			.mosi_pin  = DT_NORDIC_NRF_SPI_SPI_##idx##_MOSI_PIN,   \
-			.miso_pin  = DT_NORDIC_NRF_SPI_SPI_##idx##_MISO_PIN,   \
+			.sck_pin   = DT_NORDIC_NRF_SPIM_SPI_##idx##_SCK_PIN,   \
+			.mosi_pin  = DT_NORDIC_NRF_SPIM_SPI_##idx##_MOSI_PIN,  \
+			.miso_pin  = DT_NORDIC_NRF_SPIM_SPI_##idx##_MISO_PIN,  \
 			.ss_pin    = NRFX_SPIM_PIN_NOT_USED,		       \
 			.orc       = CONFIG_SPI_##idx##_NRF_ORC,	       \
 			.frequency = NRF_SPIM_FREQ_4M,			       \
@@ -396,7 +396,7 @@ static int spim_nrfx_pm_control(struct device *dev, u32_t ctrl_command,
 		}							       \
 	};								       \
 	DEVICE_DEFINE(spi_##idx,					       \
-		      DT_NORDIC_NRF_SPI_SPI_##idx##_LABEL,		       \
+		      DT_NORDIC_NRF_SPIM_SPI_##idx##_LABEL,		       \
 		      spi_##idx##_init,					       \
 		      spim_nrfx_pm_control,				       \
 		      &spi_##idx##_data,				       \

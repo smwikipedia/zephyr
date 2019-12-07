@@ -1,9 +1,20 @@
-# Generates a Kconfig symbol reference in RST format, with a separate
-# CONFIG_FOO.rst file for each symbol, and an alphabetical index with links in
-# index.rst.
+"""
+Generates an alphabetical index of Kconfig symbols with links in index.rst, and
+a separate CONFIG_FOO.rst file for each Kconfig symbol.
 
+The generated symbol pages can be referenced in RST as :option:`foo`, and the
+generated index page as `configuration options`_.
+
+Optionally, the documentation can be split up based on where symbols are
+defined. See the --modules flag.
+"""
+
+import argparse
+import collections
 import errno
+from operator import attrgetter
 import os
+import pathlib
 import sys
 import textwrap
 
@@ -46,84 +57,349 @@ def expr_str(expr):
     return kconfiglib.expr_str(expr, rst_link)
 
 
-INDEX_RST_HEADER = """.. _configuration_options:
+def main():
+    init()
 
-Configuration Options
-#####################
+    write_index_pages()  # Plural since there's more than one in --modules mode
 
-Introduction
-************
+    if os.getenv("KCONFIG_TURBO_MODE") == "1":
+        write_dummy_syms_page()
+    else:
+        write_sym_pages()
 
-Kconfig files describe the configuration symbols supported in the build
-system, the logical organization and structure that group the symbols in menus
-and sub-menus, and the relationships between the different configuration
-symbols that govern the valid configuration combinations.
 
-The Kconfig files are distributed across the build directory tree. The files
-are organized based on their common characteristics and on what new symbols
-they add to the configuration menus.
+def init():
+    # Initializes these globals:
+    #
+    # kconf:
+    #   Kconfig instance for the configuration
+    #
+    # out_dir:
+    #   Output directory
+    #
+    # index_desc:
+    #   Set to the corresponding command-line arguments (or None if
+    #   missing)
+    #
+    # modules:
+    #   A list of (<title>, <suffix>, <path>, <desc. path>) tuples. See the
+    #   --modules flag. Empty if --modules wasn't passed.
+    #
+    #   <path> is an absolute pathlib.Path instance, which is handy for robust
+    #   path comparisons.
+    #
+    # strip_module_paths:
+    #   True unless --keep-module-paths was passed
 
-The configuration options' information below is extracted directly from
-:program:`Kconfig`. Click on
-the option name in the table below for detailed information about each option.
+    global kconf
+    global out_dir
+    global index_desc
+    global modules
+    global strip_module_paths
 
-Supported Options
-*****************
+    args = parse_args()
 
-.. list-table:: Alphabetized Index of Configuration Options
+    kconf = kconfiglib.Kconfig(args.kconfig)
+    out_dir = args.out_dir
+    index_desc = args.index_desc
+    strip_module_paths = args.strip_module_paths
+
+    modules = []
+    for module_spec in args.modules:
+        # Split on ',', but keep any ',,' as a literal ','. Temporarily
+        # represent a literal comma with null.
+        spec_parts = [part.replace("\0", ",")
+                      for part in module_spec.replace(",,", "\0").split(",")]
+
+        if len(spec_parts) == 3:
+            title, suffix, path_s = spec_parts
+            desc_path = None
+        elif len(spec_parts) == 4:
+            title, suffix, path_s, desc_path = spec_parts
+        else:
+            sys.exit("error: --modules argument '{}' should have the format "
+                     "<title>,<suffix>,<path> or the format "
+                     "<title>,<suffix>,<path>,<index description filename>. "
+                     "A doubled ',,' in any part is treated as a literal comma."
+                     .format(module_spec))
+
+        abspath = pathlib.Path(path_s).resolve()
+        if not abspath.exists():
+            sys.exit("error: path '{}' in --modules argument does not exist"
+                     .format(abspath))
+
+        modules.append((title, suffix, abspath, desc_path))
+
+
+def parse_args():
+    # Parses command-line arguments
+
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument(
+        "--kconfig",
+        metavar="KCONFIG",
+        default="Kconfig",
+        help="Top-level Kconfig file (default: Kconfig)")
+
+    parser.add_argument(
+        "--index-desc",
+        metavar="RST_FILE",
+        help="""\
+Path to an RST file with description text for the top-level
+index.rst index page. If missing, a generic description will
+be used. Used both in --modules and non-modules mode.
+
+See <index description path> in the --modules description as
+well.""")
+
+    parser.add_argument(
+        "--modules",
+        metavar="MODULE_SPECIFICATION",
+        nargs="+",
+        default=[],
+        help="""\
+Specifies that the documentation should be split into
+several index pages, based on where symbols are defined.
+
+Each MODULE_SPECIFICATION has the form
+
+    <title>,<suffix>,<path>[,<index description path>]
+
+, where <index description path> is optional.
+
+To insert a literal comma into any of the parts, double it,
+e.g. 'My title,, with a comma'.
+
+A separate index-<suffix>.rst symbol index page is generated
+for each MODULE_SPECIFICATION, with links to all symbols
+that are defined inside <path> (possibly more than one level
+deep). The title of the index is "<title> Configuration
+Options", and a 'configuration_options_<suffix>' RST link
+target is inserted at the top of the index page.
+
+If <index description path> is given, it should be the
+path to an RST file. The contents of this file will appear
+under the Overview heading on the symbol index page for the
+module. If no <index description path> is given, a generic
+description is used instead.
+
+The top-level index.rst index page contains a TOC tree that
+links to the index-*.rst pages for any modules. It also
+includes a list of all symbols, including symbols that do
+not appear in any module.
+
+If a symbol is defined in more than one module, it will be
+listed on several index pages.
+
+Passing --modules also tweaks how paths are displayed on
+symbol information pages, showing
+'<title>/path/within/module/Kconfig' for paths that fall
+within modules. This behavior can be disabled by passing
+--keep-module-paths.""")
+
+    parser.add_argument(
+        "--keep-module-paths",
+        dest="strip_module_paths",
+        action="store_false",
+        help="Do not rewrite paths that fall within modules. See --modules.")
+
+    parser.add_argument(
+        "out_dir",
+        metavar="OUTPUT_DIRECTORY",
+        help="Directory to write .rst output files to")
+
+    return parser.parse_args()
+
+
+def write_index_pages():
+    # Writes all index pages. --modules will give more than one.
+
+    # Implementation note: Functions used here add any newlines they want
+    # before their output themselves. Try to keep this consistent if you change
+    # things.
+
+    write_main_index_page()
+    write_module_index_pages()
+
+
+def write_main_index_page():
+    # Writes the main index page, which lists all symbols. In --modules mode,
+    # links to the module index pages are included.
+
+    rst = index_header(title="Configuration Options",
+                       link="configuration_options",
+                       desc_path=index_desc)
+
+    if modules:
+        rst += """
+
+Subsystems
+**********
+
+These index pages list symbols defined within a particular subsystem, while the
+list below includes all configuration symbols.
+
+.. toctree::
+   :maxdepth: 1
+
+""" + "\n".join("   index-" + suffix for _, suffix, _, _, in modules)
+
+    rst += sym_table_rst("All configuration options",
+                         kconf.unique_defined_syms)
+
+    write_if_updated("index.rst", rst)
+
+
+def write_module_index_pages():
+    # Writes index index-<suffix>.rst index pages for all modules
+
+    # Maps each module title to a set of Symbols in the module
+    module2syms = collections.defaultdict(set)
+
+    for sym in kconf.unique_defined_syms:
+        # Loop over all definition locations
+        for node in sym.nodes:
+            mod_title = path2module(node.filename)
+            if mod_title is not None:
+                module2syms[mod_title].add(node.item)
+
+    # Iterate 'modules' instead of 'module2syms' so that an index page gets
+    # written even if the module has no symbols
+    for title, suffix, _, desc_path in modules:
+        rst = index_header(title=title + " Configuration Options",
+                           link="configuration_options_" + suffix,
+                           desc_path=desc_path)
+
+        rst += sym_table_rst("Configuration Options",
+                             module2syms[title])
+
+        write_if_updated("index-{}.rst".format(suffix), rst)
+
+
+def sym_table_rst(title, syms):
+    # Returns RST for the list of symbols on index pages. 'title' is the
+    # heading to use.
+
+    rst = """
+
+{}
+{}
+
+.. list-table::
    :header-rows: 1
+   :widths: auto
 
-   * - Kconfig Symbol
-     - Description
+   * - Symbol name
+     - Help/prompt
+""".format(title, len(title)*"*")
+
+    for sym in sorted(syms, key=attrgetter("name")):
+        rst += """\
+   * - :option:`CONFIG_{}`
+     - {}
+""".format(sym.name, sym_index_desc(sym))
+
+    return rst
+
+
+def sym_index_desc(sym):
+    # Returns the description used for 'sym' on the index page
+
+    # Use the first help text, if available
+    for node in sym.nodes:
+        if node.help is not None:
+            return node.help.replace("\n", "\n       ")
+
+    # If there's no help, use the first prompt string
+    for node in sym.nodes:
+        if node.prompt:
+            return node.prompt[0]
+
+    # No help text or prompt
+    return ""
+
+
+def index_header(title, link, desc_path):
+    # Returns the RST for the beginning of a symbol index page.
+    #
+    # title:
+    #   Page title
+    #
+    # link:
+    #   Link target string
+    #
+    # desc_path:
+    #   Path to file with RST file put into the Overview section at the
+    #   beginning of the page. If None, a generic description is used.
+
+    if desc_path is None:
+        desc = DEFAULT_INDEX_DESC
+    else:
+        try:
+            with open(desc_path, encoding="utf-8") as f:
+                desc = f.read()
+        except OSError as e:
+            sys.exit("error: failed to open index description file '{}': {}"
+                     .format(desc_path, e))
+
+    return """\
+.. _{}:
+
+{}
+{}
+
+Overview
+********
+
+{}
+
+This documentation is generated automatically from the :file:`Kconfig` files by
+the :file:`{}` script. Click on symbols for more information.""".format(
+    link,
+    title, len(title)*"=",
+    desc,
+    os.path.basename(__file__))
+
+
+DEFAULT_INDEX_DESC = """\
+:file:`Kconfig` files describe build-time configuration options (called symbols
+in Kconfig-speak), how they're grouped into menus and sub-menus, and
+dependencies between them that determine what configurations are valid.
+
+:file:`Kconfig` files appear throughout the directory tree. For example,
+:file:`subsys/power/Kconfig` defines power-related options.\
 """
 
-def main():
-    # Writes index.rst and the symbol RST files
 
-    # Accelerate doc building by skipping kconfig option documentation.
-    turbo_mode = os.environ.get('KCONFIG_TURBO_MODE') == "1"
+def write_sym_pages():
+    # Writes all symbol and choice pages
 
-    if len(sys.argv) != 3:
-        sys.exit("usage: {} <Kconfig> <output directory>"
-                 .format(sys.argv[0]))
+    for sym in kconf.unique_defined_syms:
+        write_sym_page(sym)
 
-    kconf = kconfiglib.Kconfig(sys.argv[1])
-    out_dir = sys.argv[2]
-
-    # String with the RST for the index page
-    index_rst = INDEX_RST_HEADER
-    index_def_rst = ":orphan:\n\n"
-
-    # Sort the symbols by name so that they end up in sorted order in index.rst
-    for sym in sorted(kconf.unique_defined_syms, key=lambda sym: sym.name):
-        if turbo_mode:
-            index_def_rst += ".. option:: CONFIG_{}\n".format(sym.name)
-        else:
-            # Write an RST file for the symbol
-            write_sym_rst(sym, out_dir)
-
-        # Add an index entry for the symbol that links to its RST file. Also
-        # list its prompt(s), if any. (A symbol can have multiple prompts if it
-        # has multiple definitions.)
-        index_rst += "   * - :option:`CONFIG_{}`\n     - {}\n".format(
-            sym.name,
-            " / ".join(node.prompt[0]
-                       for node in sym.nodes if node.prompt))
-
-    if turbo_mode:
-        write_if_updated(os.path.join(out_dir, "options.rst"), index_def_rst)
-    else:
-        for choice in kconf.unique_choices:
-            # Write an RST file for the choice
-            write_choice_rst(choice, out_dir)
-
-    write_if_updated(os.path.join(out_dir, "index.rst"), index_rst)
+    for choice in kconf.unique_choices:
+        write_choice_page(choice)
 
 
-def write_sym_rst(sym, out_dir):
+def write_dummy_syms_page():
+    # Writes a dummy page that just has targets for all symbol links so that
+    # they can be referenced from elsewhere in the documentation. This speeds
+    # up builds when we don't need the Kconfig symbol documentation.
+
+    rst = ":orphan:\n\nDummy symbols page for turbo mode.\n\n"
+    for sym in kconf.unique_defined_syms:
+        rst += ".. option:: CONFIG_{}\n".format(sym.name)
+
+    write_if_updated("dummy-syms.rst", rst)
+
+
+def write_sym_page(sym):
     # Writes documentation for 'sym' to <out_dir>/CONFIG_<sym.name>.rst
 
-    write_if_updated(os.path.join(out_dir, "CONFIG_{}.rst".format(sym.name)),
+    write_if_updated("CONFIG_{}.rst".format(sym.name),
                      sym_header_rst(sym) +
                      help_rst(sym) +
                      direct_deps_rst(sym) +
@@ -133,12 +409,12 @@ def write_sym_rst(sym, out_dir):
                      kconfig_definition_rst(sym))
 
 
-def write_choice_rst(choice, out_dir):
+def write_choice_page(choice):
     # Writes documentation for 'choice' to <out_dir>/choice_<n>.rst, where <n>
     # is the index of the choice in kconf.choices (where choices appear in the
     # same order as in the Kconfig files)
 
-    write_if_updated(os.path.join(out_dir, choice_id(choice) + ".rst"),
+    write_if_updated(choice_id(choice) + ".rst",
                      choice_header_rst(choice) +
                      help_rst(choice) +
                      direct_deps_rst(choice) +
@@ -224,8 +500,10 @@ def defaults_rst(sc):
         # The implicit value hint below would be misleading as well.
         return ""
 
-    rst = "Defaults\n" \
-          "========\n\n"
+    heading = "Default"
+    if len(sc.defaults) != 1:
+        heading += "s"
+    rst = "{}\n{}\n\n".format(heading, len(heading)*"=")
 
     if sc.defaults:
         for value, cond in sc.orig_defaults:
@@ -233,10 +511,8 @@ def defaults_rst(sc):
             if cond is not sc.kconfig.y:
                 rst += " if " + expr_str(cond)
             rst += "\n"
-
     else:
         rst += "No defaults. Implicitly defaults to "
-
         if isinstance(sc, kconfiglib.Choice):
             rst += "the first (visible) choice option.\n"
         elif sc.orig_type in (kconfiglib.BOOL, kconfiglib.TRISTATE):
@@ -347,7 +623,7 @@ def kconfig_definition_rst(sc):
             return ""
 
         return "Included via {}\n\n".format(
-            arrow.join("``{}:{}``".format(filename, linenr)
+            arrow.join("``{}:{}``".format(strip_module_path(filename), linenr)
                        for filename, linenr in node.include_path))
 
     def menu_path(node):
@@ -379,7 +655,7 @@ def kconfig_definition_rst(sc):
                "{}" \
                "Menu path: {}\n\n" \
                ".. parsed-literal::\n\n{}" \
-               .format(node.filename, node.linenr,
+               .format(strip_module_path(node.filename), node.linenr,
                        include_path(node), menu_path(node),
                        textwrap.indent(node.custom_str(rst_link), 4*" "))
 
@@ -427,20 +703,61 @@ def choice_desc(choice):
     return desc
 
 
+def path2module(path):
+    # Returns the name of module that 'path' appears in, or None if it does not
+    # appear in a module. 'path' is assumed to be relative to 'srctree'.
+
+    # Have to be careful here so that e.g. foo/barbaz/qaz isn't assumed to be
+    # part of a module with path foo/bar/. Play it safe with pathlib.
+
+    abspath = pathlib.Path(kconf.srctree).joinpath(path).resolve()
+    for name, _, mod_path, _ in modules:
+        try:
+            abspath.relative_to(mod_path)
+        except ValueError:
+            # Not within the module
+            continue
+
+        return name
+
+    return None
+
+
+def strip_module_path(path):
+    # If 'path' is within a module, strips the module path from it, and adds a
+    # '<module name>/' prefix. Otherwise, returns 'path' unchanged. 'path' is
+    # assumed to be relative to 'srctree'.
+
+    if strip_module_paths:
+        abspath = pathlib.Path(kconf.srctree).joinpath(path).resolve()
+        for title, _, mod_path, _ in modules:
+            try:
+                relpath = abspath.relative_to(mod_path)
+            except ValueError:
+                # Not within the module
+                continue
+
+            return "<{}>{}{}".format(title, os.path.sep, relpath)
+
+    return path
+
+
 def write_if_updated(filename, s):
-    # Writes 's' as the contents of 'filename', but only if it differs from the
-    # current contents of the file. This avoids unnecessary timestamp updates,
-    # which trigger documentation rebuilds.
+    # Writes 's' as the contents of <out_dir>/<filename>, but only if it
+    # differs from the current contents of the file. This avoids unnecessary
+    # timestamp updates, which trigger documentation rebuilds.
+
+    path = os.path.join(out_dir, filename)
 
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(path, "r", encoding="utf-8") as f:
             if s == f.read():
                 return
     except OSError as e:
         if e.errno != errno.ENOENT:
             raise
 
-    with open(filename, "w", encoding='utf-8') as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(s)
 
 

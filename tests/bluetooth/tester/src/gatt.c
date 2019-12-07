@@ -470,7 +470,9 @@ static void ccc_cfg_changed(const struct bt_gatt_attr *attr, u16_t value)
 	ccc_value = value;
 }
 
-static struct bt_gatt_attr ccc = BT_GATT_CCC(ccc_cfg_changed);
+static struct bt_gatt_attr ccc = BT_GATT_CCC(ccc_cfg_changed,
+					     BT_GATT_PERM_READ |
+					     BT_GATT_PERM_WRITE);
 
 static struct bt_gatt_attr *add_ccc(const struct bt_gatt_attr *attr)
 {
@@ -1648,14 +1650,14 @@ static u8_t notify_func(struct bt_conn *conn,
 			   const void *data, u16_t length)
 {
 	struct gatt_notification_ev *ev = (void *) ev_buf;
-	const bt_addr_le_t *addr = bt_conn_get_dst(conn);
+	const bt_addr_le_t *addr;
 
-	if (!data) {
+	if (!conn || !data) {
 		LOG_DBG("Unsubscribed");
 		(void)memset(params, 0, sizeof(*params));
 		return BT_GATT_ITER_STOP;
 	}
-
+	addr = bt_conn_get_dst(conn);
 	ev->type = (u8_t) subscribe_params.value;
 	ev->handle = sys_cpu_to_le16(subscribe_params.value_handle);
 	ev->data_length = sys_cpu_to_le16(length);
