@@ -1,4 +1,5 @@
 To build:
+
 cd zephyr/tests/unit2
 mkdir build
 cd build
@@ -6,6 +7,7 @@ cmake .. -GNinja -Dzephyr_dir=<zephyr folder of this repo>
 ninja
 
 To run:
+
 cd kernel/stack_test/
 ./stack_test
 
