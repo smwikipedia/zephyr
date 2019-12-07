@@ -3,14 +3,13 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
-#include "cmocka.h" // /home/ming/zephyr.github/zephyr/tests/unit2/cmocka-1.1.5/cmocka.h
-//#include "generated/autoconf.h" // included via CMakeLists.txt, no need to include here. /home/ming/zephyr.github/zephyr.build/helloworld_qemu_x86_64/zephyr/include/generated/autoconf.h
+#include "cmocka.h"
 #include "MockEngine.h"
 
 
-#include "kernel.h"//types needed by mocks.c
-#include "mocks.c" // the mocks, must precede the test target so we don't need forward declaration.
-#include "stack.c" // the test target /home/ming/zephyr.github/zephyr/kernel/queue.c
+#include "kernel.h"
+#include "mocks.c"
+#include "stack.c"
 
 
 #define mock_stack_size 20
