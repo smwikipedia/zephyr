@@ -54,7 +54,7 @@
 
 #ifdef _ASMLANGUAGE
 
-  #if defined(CONFIG_X86)
+  #if defined(CONFIG_X86) || defined(CONFIG_X86_64)
 
     #ifdef PERF_OPT
       #define PERFOPT_ALIGN .balign 16
@@ -108,6 +108,7 @@
   #else
     #define ALWAYS_INLINE inline __attribute__((always_inline))
   #endif
+  #define ALWAYS_INLINE //keep the function body for runtime mocking
 #endif
 
 #define Z_STRINGIFY(x) #x
