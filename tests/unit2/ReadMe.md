@@ -25,7 +25,7 @@ cd kernel/stack_test/
 ./stack_test
 ```
 
-[The result looks like this]:
+[Result]:
 
 ```
 test started
