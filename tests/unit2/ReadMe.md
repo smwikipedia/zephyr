@@ -4,6 +4,8 @@ Build the `zephyr/samples/helloworld` for `qemu_x86_64 board`. Because the test 
 
 The helloworld build folder is assumed to be `zephyr/build/hello_world_qemu_x86_64`
 
+Please use `Ninja` as the CMake generator.
+
 
 
 To build:
