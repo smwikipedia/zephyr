@@ -51,5 +51,6 @@ test started
 ```
 
 [Notes]:
+
 You will see warning for "ALWAYS_INLINE" redefined.
 It is expected because I have to disable inline to keep the function body so that mocking can work.
