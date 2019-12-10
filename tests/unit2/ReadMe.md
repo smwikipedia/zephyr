@@ -20,7 +20,7 @@ ninja
 
 
 
-[To build]:
+[To build the test]:
 
 ```
 cd zephyr/tests/unit2
@@ -30,7 +30,7 @@ cmake .. -GNinja -Dzephyr_dir=<your local zephyr folder of this repo>
 ninja
 ```
 
-[To run]:
+[To run the test]:
 
 ```
 cd kernel/stack_test/
