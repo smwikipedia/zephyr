@@ -12,8 +12,8 @@ Prerequisites steps as below
 cd <your local zephyr folder for this repo>
 mkdir build
 cd build
-mkdir qemu_x86_64
-cd qemu_x86_64
+mkdir hello_world_qemu_x86_64
+cd hello_world_qemu_x86_64
 cmake -S ../../samples/hello_world/  -B . -GNinja -DBOARD=qemu_x86_64
 ninja
 ```
