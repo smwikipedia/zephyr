@@ -6,6 +6,18 @@ The helloworld build folder is assumed to be `zephyr/build/hello_world_qemu_x86_
 
 Please use `Ninja` as the CMake generator.
 
+Prerequisites steps as below
+
+```
+cd <local zephyr folder for this repo>
+mkdir build
+cd build
+mkdir qemu_x86_64
+cd qemu_x86_64
+cmake -S ../../samples/hello_world/  -B . -GNinja -DBOARD=qemu_x86_64
+ninja
+```
+
 
 
 [To build]:
