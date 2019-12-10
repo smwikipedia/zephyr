@@ -9,7 +9,7 @@ Please use `Ninja` as the CMake generator.
 Prerequisites steps as below
 
 ```
-cd <local zephyr folder for this repo>
+cd <your local zephyr folder for this repo>
 mkdir build
 cd build
 mkdir qemu_x86_64
@@ -26,7 +26,7 @@ ninja
 cd zephyr/tests/unit2
 mkdir build
 cd build
-cmake .. -GNinja -Dzephyr_dir=<zephyr folder of this repo>
+cmake .. -GNinja -Dzephyr_dir=<your local zephyr folder of this repo>
 ninja
 ```
 
