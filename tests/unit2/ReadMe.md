@@ -39,7 +39,7 @@ ninja
 [To run the test]:
 
 ```
-cd kernel/stack_test/
+cd zephyr/tests/unit2/build/kernel/stack_test/
 ./stack_test
 ```
 
